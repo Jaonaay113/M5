@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ปฏิทินพร้อมแจ้งเตือนM.5</title>
+    <style>
+        :root {
+            color-scheme: light dark;
+            --accent: #3d7eff;
+            --accent-dark: #2b5ccd;
+            --bg: #f7f9fc;
+            --text: #101828;
+        }
+        * {
+            box-sizing: border-box;
+            font-family: "Segoe UI", Tahoma, sans-serif;
+        }
+        body {
+            margin: 0;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .app {
+            width: min(920px, 100%);
+            background: white;
+            border-radius: 18px;
+            padding: 32px;
+            box-shadow: 0 20px 60px rgba(15, 23, 42, 0.12);
+            display: grid;
+            gap: 28px;
+        }
+        .calendar-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .calendar-header button {
+            border: none;
+            background: var(--accent);
+            color: white;
+            width: 42px;
+            height: 42px;
+            border-radius: 12px;
+            cursor: pointer;
+            font-size: 18px;
+        }
+        .calendar-header button:active {
+            transform: translateY(1px);
+            background: var(--accent-dark);
+        }
+        .calendar-grid {
+            display: grid;
+            grid-template-columns: repeat(7, 1fr);
+            gap: 10px;
+            text-align: center;
+        }
+        .weekday, .day {
+            padding: 10px 0;
+        }
+        .weekday {
+            font-weight: 600;
+            color: #64748b;
+        }
+        .day {
+            border-radius: 12px;
+            cursor: pointer;
+            position: relative;
+        }
+        .day:hover {
+            background: rgba(61, 126, 255, 0.1);
+        }
+        .day.inactive {
+            color: #cbd5f5;
+            cursor: default;
+        }
+        .day.selected {
+            background: var(--accent);
+            color: white;
+        }
+        .day .indicator {
+            width: 6px;
+            height: 6px;
+            background: var(--accent);
+            border-radius: 50%;
+            position: absolute;
+            bottom: 8px;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+        form {
+            display: grid;
+            gap: 12px;
+        }
+        label {
+            font-size: 0.95rem;
+            color: #475467;
+        }
+        input, textarea {
+            width: 100%;
+            padding: 12px;
+            border-radius: 12px;
+            border: 1px solid #d0d5dd;
+            font-size: 1rem;
+        }
+        button[type="submit"] {
+            background: var(--accent);
+            color: white;
+            border: none;
+            padding: 12px 20px;
+            border-radius: 12px;
+            cursor: pointer;
+            font-size: 1rem;
+        }
+        button[type="submit"]:hover {
+            background: var(--accent-dark);
+        }
+        .events {
+            border-top: 1px solid #eaecf5;
+            padding-top: 20px;
+        }
+        .event-card {
+            border: 1px solid #eaecf5;
+            border-radius: 12px;
+            padding: 14px 18px;
+            margin-bottom: 12px;
+            display: flex;
+            justify-content: space-between;
+            gap: 10px;
+        }
+        .event-card:last-child {
+            margin-bottom: 0;
+        }
+        .status {
+            font-size: 0.9rem;
+            color: #475467;
+        }
+        @media (max-width: 768px) {
+            .app {
+                padding: 24px;
+            }
+            .calendar-grid {
+                gap: 6px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="app">
+        <section>
+            <div class="calendar-header">
+                <button id="prev-month" aria-label="เดือนก่อนหน้า">‹</button>
+                <h1 id="month-label"></h1>
+                <button id="next-month" aria-label="เดือนถัดไป">›</button>
+            </div>
+            <div class="calendar-grid" id="calendar">
+                <div class="weekday">อา</div>
+                <div class="weekday">จ</div>
+                <div class="weekday">อ</div>
+                <div class="weekday">พ</div>
+                <div class="weekday">พฤ</div>
+                <div class="weekday">ศ</div>
+                <div class="weekday">ส</div>
+            </div>
+        </section>
+
+        <form id="event-form">
+            <label>
+                วันที่/เวลา
+                <input type="datetime-local" id="event-datetime" required>
+            </label>
+            <label>
+                ชื่องาน
+                <input type="text" id="event-title" placeholder="เช่น นัดประชุมทีม" required>
+            </label>
+            <label>
+                รายละเอียด
+                <textarea id="event-note" rows="2" placeholder="รายละเอียดเพิ่มเติม"></textarea>
+            </label>
+            <button type="submit">บันทึกและตั้งแจ้งเตือน</button>
+            <div class="status" id="status-text">กรุณาอนุญาตการแจ้งเตือนในครั้งแรก</div>
+        </form>
+
+        <section class="events">
+            <h2>งานที่ตั้งแจ้งเตือน</h2>
+            <div id="event-list"></div>
+        </section>
+    </div>
+
+    <script>
+        const monthLabel = document.getElementById("month-label");
+        const calendar = document.getElementById("calendar");
+        const eventForm = document.getElementById("event-form");
+        const eventList = document.getElementById("event-list");
+        const statusText = document.getElementById("status-text");
+        const eventDatetime = document.getElementById("event-datetime");
+
+        let today = new Date();
+        let currentMonth = today.getMonth();
+        let currentYear = today.getFullYear();
+        let selectedDate = today;
+        const events = [];
+
+        const WEEKDAYS = ["อา", "จ", "อ", "พ", "พฤ", "ศ", "ส"];
+
+        function renderCalendar() {
+            monthLabel.textContent = new Date(currentYear, currentMonth).toLocaleDateString("th-TH", {
+                year: "numeric",
+                month: "long"
+            });
+
+            const firstDayOfMonth = new Date(currentYear, currentMonth, 1);
+            const lastDayOfMonth = new Date(currentYear, currentMonth + 1, 0);
+            const startWeekday = firstDayOfMonth.getDay();
+            const totalDays = lastDayOfMonth.getDate();
+
+            calendar.innerHTML = WEEKDAYS.map(day => `<div class="weekday">${day}</div>`).join("");
+
+            for (let i = 0; i < startWeekday; i++) {
+                calendar.innerHTML += `<div class="day inactive"></div>`;
+            }
+
+            for (let day = 1; day <= totalDays; day++) {
+                const date = new Date(currentYear, currentMonth, day);
+                const dateStr = date.toDateString();
+                const hasEvent = events.some(ev => new Date(ev.datetime).toDateString() === dateStr);
+                const isSelected = selectedDate.toDateString() === dateStr;
+
+                calendar.innerHTML += `
+                    <div class="day ${isSelected ? "selected" : ""}" data-date="${date.toISOString()}">
+                        ${day}
+                        ${hasEvent ? '<span class="indicator"></span>' : ""}
+                    </div>
+                `;
+            }
+
+            document.querySelectorAll(".day[data-date]").forEach(dayEl => {
+                dayEl.addEventListener("click", () => {
+                    selectedDate = new Date(dayEl.dataset.date);
+                    eventDatetime.value = new Date(selectedDate.setHours(9, 0, 0, 0)).toISOString().slice(0, 16);
+                    renderCalendar();
+                });
+            });
+        }
+
+        function requestNotificationPermission() {
+            if (!("Notification" in window)) {
+                statusText.textContent = "เบราว์เซอร์นี้ไม่รองรับการแจ้งเตือน";
+                return;
+            }
+            Notification.requestPermission().then(permission => {
+                statusText.textContent = permission === "granted"
+                    ? "พร้อมแจ้งเตือนตามเวลาที่ตั้งไว้"
+                    : "ไม่ได้รับอนุญาตแจ้งเตือน";
+            });
+        }
+
+        function scheduleNotification(event) {
+            if (!("Notification" in window) || Notification.permission !== "granted") {
+                return;
+            }
+            const timeUntil = new Date(event.datetime).getTime() - Date.now();
+            if (timeUntil <= 0) {
+                new Notification("งานเลยเวลาแล้ว", { body: event.title });
+                return;
+            }
+            setTimeout(() => {
+                new Notification(event.title, { body: event.note || "ถึงเวลาที่ตั้งไว้แล้ว" });
+            }, timeUntil);
+        }
+
+        function renderEvents() {
+            if (!events.length) {
+                eventList.innerHTML = "<p>ยังไม่มีงาน</p>";
+                return;
+            }
+            eventList.innerHTML = events
+                .map(event => `
+                    <article class="event-card">
+                        <div>
+                            <strong>${event.title}</strong>
+                            <div>${new Date(event.datetime).toLocaleString("th-TH")}</div>
+                            ${event.note ? `<p>${event.note}</p>` : ""}
+                        </div>
+                        <small>${event.status}</small>
+                    </article>
+                `)
+                .join("");
+        }
+
+        eventForm.addEventListener("submit", e => {
+            e.preventDefault();
+            const title = document.getElementById("event-title").value.trim();
+            const datetime = eventDatetime.value;
+            const note = document.getElementById("event-note").value.trim();
+
+            if (!title || !datetime) {
+                statusText.textContent = "กรุณากรอกข้อมูลให้ครบถ้วน";
+                return;
+            }
+
+            const event = {
+                id: crypto.randomUUID(),
+                title,
+                datetime,
+                note,
+                status: "รอแจ้งเตือน"
+            };
+            events.push(event);
+            scheduleNotification(event);
+            renderCalendar();
+            renderEvents();
+            statusText.textContent = "บันทึกสำเร็จ! ระบบจะเตือนให้ตามเวลา";
+            eventForm.reset();
+        });
+
+        document.getElementById("prev-month").addEventListener("click", () => {
+            currentMonth--;
+            if (currentMonth < 0) {
+                currentMonth = 11;
+                currentYear--;
+            }
+            renderCalendar();
+        });
+
+        document.getElementById("next-month").addEventListener("click", () => {
+            currentMonth++;
+            if (currentMonth > 11) {
+                currentMonth = 0;
+                currentYear++;
+            }
+            renderCalendar();
+        });
+
+        requestNotificationPermission();
+        renderCalendar();
+        renderEvents();
+    </script>
+</body>
+</html>
