@@ -140,12 +140,48 @@
             font-size: 0.9rem;
             color: #475467;
         }
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: var(--accent);
+            color: white;
+            padding: 16px 20px;
+            border-radius: 12px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+            z-index: 1000;
+            animation: slideIn 0.3s ease-out;
+            max-width: 320px;
+        }
+        @keyframes slideIn {
+            from {
+                transform: translateX(100%);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+        .toast-title {
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+        .toast-body {
+            font-size: 0.9rem;
+            opacity: 0.9;
+        }
         @media (max-width: 768px) {
             .app {
                 padding: 24px;
             }
             .calendar-grid {
                 gap: 6px;
+            }
+            .toast {
+                right: 10px;
+                left: 10px;
+                max-width: none;
             }
         }
     </style>
@@ -182,6 +218,13 @@
                 รายละเอียด
                 <textarea id="event-note" rows="2" placeholder="รายละเอียดเพิ่มเติม"></textarea>
             </label>
+            <label>
+                อีเมลสำหรับรับการแจ้งเตือน (ไม่บังคับ)
+                <div style="display: flex; gap: 8px; align-items: flex-start;">
+                    <input type="email" id="event-email" placeholder="your-email@example.com" style="flex: 1;">
+                </div>
+                <small style="color: #64748b; font-size: 0.85rem;">กรอกครั้งเดียว ระบบจะจำไว้ใช้ต่อ</small>
+            </label>
             <button type="submit">บันทึกและตั้งแจ้งเตือน</button>
             <div class="status" id="status-text">กรุณาอนุญาตการแจ้งเตือนในครั้งแรก</div>
         </form>
@@ -192,6 +235,37 @@
         </section>
     </div>
 
+    <!-- EmailJS SDK -->
+    <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
+    <script>
+        // ตั้งค่า EmailJS (ต้องแก้ไขค่าเหล่านี้หลังจากสมัคร EmailJS)
+        // ดูวิธีตั้งค่าที่: https://www.emailjs.com/docs/
+        const EMAILJS_CONFIG = {
+            serviceID: 'service_ta1n86e',      // Service ID
+            templateID: 'template_q0d7bey',   // Template ID
+            publicKey: 'oZKQtMaF_awGWNYXz'    // Public Key
+        };
+
+        // เริ่มต้น EmailJS (รอให้ SDK โหลดเสร็จก่อน)
+        window.addEventListener('load', function() {
+            setTimeout(() => {
+                if (typeof emailjs !== 'undefined') {
+                    try {
+                        emailjs.init(EMAILJS_CONFIG.publicKey);
+                        console.log("✅ EmailJS เริ่มต้นสำเร็จ", {
+                            serviceID: EMAILJS_CONFIG.serviceID,
+                            templateID: EMAILJS_CONFIG.templateID,
+                            publicKey: EMAILJS_CONFIG.publicKey.substring(0, 5) + "..."
+                        });
+                    } catch (error) {
+                        console.error("❌ EmailJS init error:", error);
+                    }
+                } else {
+                    console.error("❌ EmailJS SDK ไม่ได้โหลด - ตรวจสอบว่า CDN ทำงาน");
+                }
+            }, 500);
+        });
+    </script>
     <script>
         const monthLabel = document.getElementById("month-label");
         const calendar = document.getElementById("calendar");
@@ -199,12 +273,49 @@
         const eventList = document.getElementById("event-list");
         const statusText = document.getElementById("status-text");
         const eventDatetime = document.getElementById("event-datetime");
+        const eventEmail = document.getElementById("event-email");
+
+        // โหลดอีเมลที่บันทึกไว้
+        function loadSavedEmail() {
+            const savedEmail = localStorage.getItem("calendar-email");
+            if (savedEmail) {
+                eventEmail.value = savedEmail;
+            }
+        }
+
+        // บันทึกอีเมล
+        function saveEmail() {
+            if (eventEmail.value.trim()) {
+                localStorage.setItem("calendar-email", eventEmail.value.trim());
+            }
+        }
 
         let today = new Date();
         let currentMonth = today.getMonth();
         let currentYear = today.getFullYear();
         let selectedDate = today;
-        const events = [];
+        let events = [];
+        let notificationTimeouts = new Map();
+
+        // โหลด events จาก localStorage
+        function loadEvents() {
+            const saved = localStorage.getItem("calendar-events");
+            if (saved) {
+                events = JSON.parse(saved);
+                // ตั้งแจ้งเตือนใหม่สำหรับ events ที่ยังไม่ผ่านเวลา
+                events.forEach(event => {
+                    const eventTime = new Date(event.datetime).getTime();
+                    if (eventTime > Date.now()) {
+                        scheduleNotification(event);
+                    }
+                });
+            }
+        }
+
+        // บันทึก events ลง localStorage
+        function saveEvents() {
+            localStorage.setItem("calendar-events", JSON.stringify(events));
+        }
 
         const WEEKDAYS = ["อา", "จ", "อ", "พ", "พฤ", "ศ", "ส"];
 
@@ -260,18 +371,204 @@
             });
         }
 
-        function scheduleNotification(event) {
-            if (!("Notification" in window) || Notification.permission !== "granted") {
-                return;
-            }
-            const timeUntil = new Date(event.datetime).getTime() - Date.now();
-            if (timeUntil <= 0) {
-                new Notification("งานเลยเวลาแล้ว", { body: event.title });
-                return;
-            }
+        // แสดง toast notification ในหน้าเว็บ
+        function showToast(title, body) {
+            const toast = document.createElement("div");
+            toast.className = "toast";
+            toast.innerHTML = `
+                <div class="toast-title">${title}</div>
+                <div class="toast-body">${body}</div>
+            `;
+            document.body.appendChild(toast);
             setTimeout(() => {
-                new Notification(event.title, { body: event.note || "ถึงเวลาที่ตั้งไว้แล้ว" });
+                toast.style.animation = "slideIn 0.3s ease-out reverse";
+                setTimeout(() => toast.remove(), 300);
+            }, 4000);
+        }
+
+        // เล่นเสียงแจ้งเตือน
+        function playNotificationSound() {
+            try {
+                const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                const oscillator = audioContext.createOscillator();
+                const gainNode = audioContext.createGain();
+                
+                oscillator.connect(gainNode);
+                gainNode.connect(audioContext.destination);
+                
+                oscillator.frequency.value = 800;
+                oscillator.type = "sine";
+                
+                gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5);
+                
+                oscillator.start(audioContext.currentTime);
+                oscillator.stop(audioContext.currentTime + 0.5);
+            } catch (e) {
+                console.log("ไม่สามารถเล่นเสียงได้:", e);
+            }
+        }
+
+        // ตั้งแจ้งเตือน
+        function scheduleNotification(event) {
+            const timeUntil = new Date(event.datetime).getTime() - Date.now();
+            
+            if (timeUntil <= 0) {
+                // ถ้าเลยเวลาแล้ว แจ้งเตือนทันที
+                showNotification(event, "งานเลยเวลาแล้ว");
+                return;
+            }
+
+            // ล้าง timeout เก่าถ้ามี
+            if (notificationTimeouts.has(event.id)) {
+                clearTimeout(notificationTimeouts.get(event.id));
+            }
+
+            // ตั้ง timeout ใหม่
+            const timeoutId = setTimeout(() => {
+                showNotification(event, "ถึงเวลาที่ตั้งไว้แล้ว");
+                // อัปเดตสถานะ
+                event.status = "แจ้งเตือนแล้ว";
+                saveEvents();
+                renderEvents();
+                notificationTimeouts.delete(event.id);
             }, timeUntil);
+
+            notificationTimeouts.set(event.id, timeoutId);
+        }
+
+        // ส่งอีเมลแจ้งเตือน
+        async function sendEmailNotification(event, defaultBody) {
+            const email = event.email || localStorage.getItem("calendar-email");
+            
+            console.log("🔍 เริ่มส่งอีเมล:", { email, eventTitle: event.title });
+            
+            if (!email || !email.trim()) {
+                console.warn("⚠️ ไม่มีอีเมล ไม่สามารถส่งได้");
+                return; // ไม่มีอีเมล ไม่ต้องส่ง
+            }
+
+            // ตรวจสอบว่า EmailJS ตั้งค่าครบหรือยัง
+            // เช็คว่ายังเป็นค่า default (YOUR_SERVICE_ID) หรือไม่ - ถ้าใช่แสดงว่ายังไม่ได้ตั้งค่า
+            // ⚠️ อย่าแก้ไขส่วนนี้! ต้องเช็คว่ายังเป็นค่า default หรือไม่
+            const isDefaultConfig = 
+                EMAILJS_CONFIG.serviceID === 'YOUR_SERVICE_ID' || 
+                EMAILJS_CONFIG.templateID === 'YOUR_TEMPLATE_ID' ||
+                EMAILJS_CONFIG.publicKey === 'YOUR_PUBLIC_KEY';
+            
+            if (isDefaultConfig) {
+                console.error("❌ กรุณาตั้งค่า EmailJS ก่อนใช้งาน");
+                return;
+            }
+            
+            // ตรวจสอบว่ามีค่าจริงๆ (ไม่ใช่ค่าว่าง)
+            if (!EMAILJS_CONFIG.serviceID || !EMAILJS_CONFIG.templateID || !EMAILJS_CONFIG.publicKey) {
+                console.error("❌ EmailJS Config ไม่ครบถ้วน");
+                return;
+            }
+
+            // ตรวจสอบว่า emailjs พร้อมใช้งานหรือไม่
+            if (typeof emailjs === 'undefined') {
+                console.error("❌ EmailJS SDK ไม่ได้โหลด");
+                return;
+            }
+
+            console.log("✅ EmailJS Config ถูกต้อง:", {
+                serviceID: EMAILJS_CONFIG.serviceID,
+                templateID: EMAILJS_CONFIG.templateID,
+                publicKey: EMAILJS_CONFIG.publicKey.substring(0, 5) + "..."
+            });
+
+            const eventDate = new Date(event.datetime).toLocaleString("th-TH", {
+                year: "numeric",
+                month: "long",
+                day: "numeric",
+                hour: "2-digit",
+                minute: "2-digit"
+            });
+
+            const templateParams = {
+                to_email: email,
+                event_title: event.title,
+                event_date: eventDate,
+                event_note: event.note || defaultBody,
+                event_datetime: new Date(event.datetime).toLocaleString("th-TH")
+            };
+
+            console.log("📧 Template Params:", templateParams);
+            console.log("📤 กำลังส่งอีเมล...");
+            console.log("🔧 ใช้ Service:", EMAILJS_CONFIG.serviceID);
+            console.log("🔧 ใช้ Template:", EMAILJS_CONFIG.templateID);
+
+            try {
+                const response = await emailjs.send(
+                    EMAILJS_CONFIG.serviceID,
+                    EMAILJS_CONFIG.templateID,
+                    templateParams
+                );
+                console.log("✅ ส่งอีเมลแจ้งเตือนสำเร็จ!", response);
+                console.log("📬 Response Status:", response.status);
+                console.log("📬 Response Text:", response.text);
+                showToast("ส่งอีเมลสำเร็จ", `ส่งอีเมลแจ้งเตือนไปยัง ${email} แล้ว`);
+                return true;
+            } catch (error) {
+                console.error("❌ ไม่สามารถส่งอีเมลได้:", error);
+                console.error("📋 Error details:", {
+                    status: error.status,
+                    text: error.text,
+                    message: error.message,
+                    serviceID: EMAILJS_CONFIG.serviceID,
+                    templateID: EMAILJS_CONFIG.templateID,
+                    publicKey: EMAILJS_CONFIG.publicKey ? "มีค่า" : "ไม่มีค่า"
+                });
+                
+                // แสดง error message ที่ชัดเจน
+                let errorMsg = "เกิดข้อผิดพลาด";
+                if (error.status === 400) {
+                    errorMsg = "Template หรือ Service ID ไม่ถูกต้อง - ตรวจสอบ Template ใน EmailJS Dashboard";
+                } else if (error.status === 401) {
+                    errorMsg = "Public Key ไม่ถูกต้อง";
+                } else if (error.status === 403) {
+                    errorMsg = "ไม่มีสิทธิ์เข้าถึง - ตรวจสอบ Public Key";
+                } else if (error.status === 404) {
+                    errorMsg = "ไม่พบ Service หรือ Template - ตรวจสอบ ID";
+                } else if (error.status === 429) {
+                    errorMsg = "เกินโควต้า (200 อีเมล/เดือน)";
+                } else if (error.text) {
+                    errorMsg = error.text;
+                } else if (error.message) {
+                    errorMsg = error.message;
+                }
+                
+                console.error("💡 คำแนะนำ: ตรวจสอบว่า Email Template มีตัวแปรเหล่านี้:");
+                console.error("   - {{to_email}} ในช่อง 'To Email'");
+                console.error("   - {{event_title}}, {{event_note}}, {{event_datetime}} ในเนื้อหา");
+                
+                showToast("ส่งอีเมลไม่สำเร็จ", errorMsg);
+                return false;
+            }
+        }
+
+        // แสดงการแจ้งเตือน (Browser + Toast + Sound + Email)
+        async function showNotification(event, defaultBody) {
+            const body = event.note || defaultBody;
+            
+            // Browser Notification
+            if ("Notification" in window && Notification.permission === "granted") {
+                new Notification(event.title, { 
+                    body: body,
+                    icon: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%233d7eff'%3E%3Cpath d='M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z'/%3E%3C/svg%3E"
+                });
+            }
+            
+            // Toast notification ในหน้าเว็บ
+            showToast(event.title, body);
+            
+            // เล่นเสียง
+            playNotificationSound();
+
+            // ส่งอีเมล
+            await sendEmailNotification(event, defaultBody);
         }
 
         function renderEvents() {
@@ -298,10 +595,16 @@
             const title = document.getElementById("event-title").value.trim();
             const datetime = eventDatetime.value;
             const note = document.getElementById("event-note").value.trim();
+            const email = eventEmail.value.trim();
 
             if (!title || !datetime) {
                 statusText.textContent = "กรุณากรอกข้อมูลให้ครบถ้วน";
                 return;
+            }
+
+            // บันทึกอีเมลถ้ามี
+            if (email) {
+                saveEmail();
             }
 
             const event = {
@@ -309,14 +612,21 @@
                 title,
                 datetime,
                 note,
+                email: email || localStorage.getItem("calendar-email") || "",
                 status: "รอแจ้งเตือน"
             };
             events.push(event);
+            saveEvents();
             scheduleNotification(event);
             renderCalendar();
             renderEvents();
-            statusText.textContent = "บันทึกสำเร็จ! ระบบจะเตือนให้ตามเวลา";
+            
+            const emailStatus = email || localStorage.getItem("calendar-email") 
+                ? " (รวมถึงอีเมล)" 
+                : "";
+            statusText.textContent = `บันทึกสำเร็จ! ระบบจะเตือนให้ตามเวลา${emailStatus}`;
             eventForm.reset();
+            loadSavedEmail(); // โหลดอีเมลที่บันทึกไว้กลับมา
         });
 
         document.getElementById("prev-month").addEventListener("click", () => {
@@ -337,6 +647,55 @@
             renderCalendar();
         });
 
+        // ตรวจสอบแจ้งเตือนทุกนาที (สำหรับ events ที่อาจพลาด)
+        setInterval(() => {
+            const now = Date.now();
+            events.forEach(event => {
+                const eventTime = new Date(event.datetime).getTime();
+                const diff = eventTime - now;
+                // ถ้าใกล้เวลา (ภายใน 1 นาที) และยังไม่ได้แจ้งเตือน
+                if (diff > 0 && diff <= 60000 && event.status === "รอแจ้งเตือน") {
+                    showNotification(event, "ใกล้ถึงเวลาที่ตั้งไว้แล้ว");
+                    event.status = "แจ้งเตือนแล้ว";
+                    saveEvents();
+                    renderEvents();
+                }
+            });
+        }, 60000); // ตรวจสอบทุก 1 นาที
+
+        // ปุ่มทดสอบส่งอีเมล
+        document.getElementById("test-email-btn").addEventListener("click", async () => {
+            const email = eventEmail.value.trim() || localStorage.getItem("calendar-email");
+            
+            if (!email) {
+                statusText.textContent = "กรุณากรอกอีเมลก่อนทดสอบ";
+                statusText.style.color = "#ef4444";
+                return;
+            }
+
+            statusText.textContent = "กำลังทดสอบส่งอีเมล...";
+            statusText.style.color = "#475467";
+
+            const testEvent = {
+                id: "test",
+                title: "ทดสอบการแจ้งเตือน",
+                datetime: new Date().toISOString(),
+                note: "นี่คืออีเมลทดสอบจากปฏิทิน M.5",
+                email: email
+            };
+
+            try {
+                await sendEmailNotification(testEvent, "นี่คืออีเมลทดสอบ");
+                statusText.textContent = `ส่งอีเมลทดสอบไปยัง ${email} สำเร็จ! ตรวจสอบกล่องจดหมาย`;
+                statusText.style.color = "#10b981";
+            } catch (error) {
+                statusText.textContent = `ส่งอีเมลไม่สำเร็จ: ${error.message || "ตรวจสอบ Console (F12)"}`;
+                statusText.style.color = "#ef4444";
+            }
+        });
+
+        loadEvents();
+        loadSavedEmail();
         requestNotificationPermission();
         renderCalendar();
         renderEvents();
